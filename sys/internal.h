@@ -138,6 +138,10 @@ struct _DEVICE_CONTEXT
 	uint16_t T44_address;
 	uint8_t T100_reportid_min;
 	uint8_t T100_reportid_max;
+
+	uint8_t max_reportid;
+
+	uint8_t last_message_count;
 };
 
 struct _REQUEST_CONTEXT

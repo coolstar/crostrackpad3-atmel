@@ -7,6 +7,7 @@
 
 bool deviceLoaded = false;
 NTSTATUS BOOTTRACKPAD(_In_  PDEVICE_CONTEXT  devContext);
+int AtmlPadProcessMessagesUntilInvalid(PDEVICE_CONTEXT pDevice);
 
 /////////////////////////////////////////////////
 //
@@ -328,6 +329,41 @@ static NTSTATUS mxt_read_t100_config(PDEVICE_CONTEXT devContext)
 	return STATUS_SUCCESS;
 }
 
+VOID
+AtmlPadBootWorkItem(
+	IN WDFWORKITEM  WorkItem
+)
+{
+	WDFDEVICE Device = (WDFDEVICE)WdfWorkItemGetParentObject(WorkItem);
+	PDEVICE_CONTEXT pDevice = GetDeviceContext(Device);
+
+	uint8_t test[8];
+	mxt_read_reg(pDevice, pDevice->T44_address, test, 0x07);
+
+	WdfObjectDelete(WorkItem);
+}
+
+void AtmlPadBootTimer(_In_ WDFTIMER hTimer) {
+	WDFDEVICE Device = (WDFDEVICE)WdfTimerGetParentObject(hTimer);
+	PDEVICE_CONTEXT pDevice = GetDeviceContext(Device);
+
+	WDF_OBJECT_ATTRIBUTES attributes;
+	WDF_WORKITEM_CONFIG workitemConfig;
+	WDFWORKITEM hWorkItem;
+
+	WDF_OBJECT_ATTRIBUTES_INIT(&attributes);
+	WDF_OBJECT_ATTRIBUTES_SET_CONTEXT_TYPE(&attributes, DEVICE_CONTEXT);
+	attributes.ParentObject = Device;
+	WDF_WORKITEM_CONFIG_INIT(&workitemConfig, AtmlPadBootWorkItem);
+
+	WdfWorkItemCreate(&workitemConfig,
+		&attributes,
+		&hWorkItem);
+
+	WdfWorkItemEnqueue(hWorkItem);
+	WdfTimerStop(hTimer, FALSE);
+}
+
 NTSTATUS BOOTTRACKPAD(
 	_In_  PDEVICE_CONTEXT  devContext
 	)
@@ -441,6 +477,10 @@ NTSTATUS BOOTTRACKPAD(
 		AtmlPadPrint(DEBUG_LEVEL_INFO, DBG_PNP, "Obj Type: %d\n", obj->type);
 	}
 
+	devContext->max_reportid = reportid;
+
+	AtmlPadProcessMessagesUntilInvalid(devContext);
+
 	if (devContext->multitouch == MXT_TOUCH_MULTI_T9)
 		mxt_read_t9_resolution(devContext);
 	else if (devContext->multitouch == MXT_TOUCH_MULTITOUCHSCREEN_T100)
@@ -457,6 +497,18 @@ NTSTATUS BOOTTRACKPAD(
 	sprintf(sc->firmware_version, "%u.%u.%02X", core.info.version >> 4, core.info.version & 0xf, core.info.build);
 
 	atmel_reset_device(devContext);
+
+	WDF_TIMER_CONFIG              timerConfig;
+	WDFTIMER                      hTimer;
+	WDF_OBJECT_ATTRIBUTES         attributes;
+
+	WDF_TIMER_CONFIG_INIT(&timerConfig, AtmlPadBootTimer);
+
+	WDF_OBJECT_ATTRIBUTES_INIT(&attributes);
+	attributes.ParentObject = devContext->FxDevice;
+	NTSTATUS status = WdfTimerCreate(&timerConfig, &attributes, &hTimer);
+
+	WdfTimerStart(hTimer, WDF_REL_TIMEOUT_IN_MS(200));
 
 	return STATUS_SUCCESS;
 }

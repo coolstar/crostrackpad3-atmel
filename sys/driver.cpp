@@ -332,15 +332,29 @@ exit:
     return status;
 }
 
-void AtmlPadDeviceRead(PDEVICE_CONTEXT pDevice) {
-	static unsigned int samus_touchpad_buttons[] = {
+static NTSTATUS
+mxt_read_reg(PDEVICE_CONTEXT  devContext, uint16_t reg, void *rbuf, int bytes)
+{
+	uint8_t wreg[2];
+	wreg[0] = reg & 255;
+	wreg[1] = reg >> 8;
+
+	uint16_t nreg = ((uint16_t *)wreg)[0];
+
+	NTSTATUS error = SpbReadDataSynchronously16(&devContext->I2CContext, nreg, rbuf, bytes);
+
+	return error;
+}
+
+int AtmlPadProcessMessage(PDEVICE_CONTEXT pDevice, uint8_t *message) {
+	static unsigned int t100_touchpad_buttons[] = {
 		0, //RESERVED
 		0, //RESERVED
 		0, //RESERVED
 		1 //LEFT
 	};
 
-	static unsigned int other_chromebook_tp_buttons[] = {
+	static unsigned int t9_tp_buttons[] = {
 		0, //RESERVED
 		0, //RESERVED
 		0, //RESERVED
@@ -349,39 +363,52 @@ void AtmlPadDeviceRead(PDEVICE_CONTEXT pDevice) {
 		1 //LEFT
 	};
 
-	int t19_num_keys = ARRAYSIZE(samus_touchpad_buttons);
-	unsigned int *t19_keymap = samus_touchpad_buttons;
+	int t19_num_keys = ARRAYSIZE(t9_tp_buttons);
+	unsigned int *t19_keymap = t9_tp_buttons;
 
-	mxt_message_t msg;
-	SpbReadDataSynchronously(&pDevice->I2CContext, 0, &msg, sizeof(msg));
-
-	int reportid = msg.any.reportid;
-
-	if (reportid == 0xff) {
+	if (pDevice->multitouch == MXT_TOUCH_MULTITOUCHSCREEN_T100) {
+		t19_num_keys = ARRAYSIZE(t100_touchpad_buttons);
+		t19_keymap = t100_touchpad_buttons;
 	}
-	else if (reportid >= pDevice->T9_reportid_min && reportid <= pDevice->T9_reportid_max) {
-		reportid = reportid - pDevice->T9_reportid_min;
 
-		int rawx = (msg.touch_t9.pos[0] << 4) |
-			((msg.touch_t9.pos[2] >> 4) & 0x0F);
-		int rawy = ((msg.touch_t9.pos[1] << 4) |
-			((msg.touch_t9.pos[2]) & 0x0F)) / 4;
+	uint8_t report_id = message[0];
 
-		pDevice->Flags[reportid] = msg.touch_t9.flags;
-		pDevice->XValue[reportid] = rawx;
-		pDevice->YValue[reportid] = rawy;
-		pDevice->AREA[reportid] = msg.touch_t9.area;
+	if (report_id == 0xff)
+		return 0;
+
+	if (report_id == pDevice->T6_reportid) {
+		uint8_t status = message[1];
+		uint32_t crc = message[2] | (message[3] << 8) | (message[4] << 16);
 	}
-	else if (reportid >= pDevice->T100_reportid_min && reportid <= pDevice->T100_reportid_max) {
-		reportid = reportid - pDevice->T100_reportid_min - 2;
+	else if (report_id >= pDevice->T9_reportid_min && report_id <= pDevice->T9_reportid_max) {
+		uint8_t flags = message[1];
 
-		if (reportid < 0)
-			return;
+		int rawx = (message[2] << 4) | ((message[4] >> 4) & 0xf);
+		int rawy = (message[3] << 4) | ((message[4] & 0xf));
+
+		/* Handle 10/12 bit switching */
+		if (pDevice->max_x < 1024)
+			rawx >>= 2;
+		if (pDevice->max_y < 1024)
+			rawy >>= 2;
+
+		uint8_t area = message[5];
+		uint8_t ampl = message[6];
+
+		pDevice->Flags[report_id] = flags;
+		pDevice->XValue[report_id] = rawx;
+		pDevice->YValue[report_id] = rawy;
+		pDevice->AREA[report_id] = area;
+	}
+	else if (report_id >= pDevice->T100_reportid_min && report_id <= pDevice->T100_reportid_max) {
+		int reportid = report_id - pDevice->T100_reportid_min - 2;
+
+		uint8_t flags = message[1];
 
 		uint8_t t9_flags = 0; //convert T100 flags to T9
-		if (msg.touch_t100.flags & MXT_T100_DETECT) {
+		if (flags & MXT_T100_DETECT) {
 			uint8_t type;
-			type = (msg.touch_t100.flags & MXT_T100_TYPE_MASK) >> 4;
+			type = (flags & MXT_T100_TYPE_MASK) >> 4;
 			if (type == MXT_T100_TYPE_FINGER || type == MXT_T100_TYPE_GLOVE || type == MXT_T100_TYPE_PASSIVE_STYLUS)
 				t9_flags += MXT_T9_DETECT;
 			if (type == MXT_T100_TYPE_HOVERING_FINGER)
@@ -390,8 +417,8 @@ void AtmlPadDeviceRead(PDEVICE_CONTEXT pDevice) {
 		else if (pDevice->Flags[reportid] & MXT_T100_DETECT)
 			t9_flags += MXT_T9_RELEASE;
 
-		int rawx = msg.touch_t100.x;
-		int rawy = msg.touch_t100.y;
+		int rawx = *((uint16_t *)&message[2]);
+		int rawy = *((uint16_t *)&message[4]);
 
 		if (reportid >= 0) {
 			pDevice->Flags[reportid] = t9_flags;
@@ -401,21 +428,132 @@ void AtmlPadDeviceRead(PDEVICE_CONTEXT pDevice) {
 			pDevice->AREA[reportid] = 10;
 		}
 	}
-	else if (reportid == pDevice->T19_reportid) {
+	else if (report_id == pDevice->T19_reportid) {
 #define BIT(nr)                 (1UL << (nr))
 
 		for (int i = 0; i < t19_num_keys; i++) {
 			if (t19_keymap[i] == 0)
 				continue;
 
-			bool buttonClicked = !(msg.any.data[0] & BIT(i));
+			bool buttonClicked = !(message[1] & BIT(i));
 
 			pDevice->T19_buttonstate = buttonClicked;
 		}
 	}
 
-	pDevice->lastmsg = msg;
 	pDevice->RegsSet = true;
+	return 1;
+}
+
+int AtmelReadAndProcessMessages(PDEVICE_CONTEXT pDevice, uint8_t count) {
+	uint8_t num_valid = 0;
+	int i, ret;
+	if (count > pDevice->max_reportid)
+		return -1;
+
+	uint8_t *msg_buf = (uint8_t *)ExAllocatePoolWithTag(NonPagedPool, pDevice->max_reportid * pDevice->T5_msg_size, ATMLPAD_POOL_TAG);
+
+	for (int i = 0; i < pDevice->max_reportid * pDevice->T5_msg_size; i++) {
+		msg_buf[i] = 0xff;
+	}
+
+	mxt_read_reg(pDevice, pDevice->T5_address, msg_buf, pDevice->T5_msg_size * count);
+
+	for (i = 0; i < count; i++) {
+		ret = AtmlPadProcessMessage(pDevice,
+			msg_buf + pDevice->T5_msg_size * i);
+
+		if (ret == 1)
+			num_valid++;
+	}
+
+	ExFreePoolWithTag(msg_buf, ATMLPAD_POOL_TAG);
+
+	/* return number of messages read */
+	return num_valid;
+}
+
+int AtmlPadProcessMessagesUntilInvalid(PDEVICE_CONTEXT pDevice) {
+	int count, read;
+	uint8_t tries = 2;
+
+	count = pDevice->max_reportid;
+	do {
+		read = AtmelReadAndProcessMessages(pDevice, count);
+		if (read < count)
+			return 0;
+	} while (--tries);
+	return -1;
+}
+
+bool AtmlPadDeviceReadT44(PDEVICE_CONTEXT pDevice) {
+	NTSTATUS stret, ret;
+	uint8_t count, num_left;
+
+	uint8_t *msg_buf = (uint8_t *)ExAllocatePoolWithTag(NonPagedPool, pDevice->T5_msg_size + 1, ATMLPAD_POOL_TAG);
+
+	/* Read T44 and T5 together */
+	stret = mxt_read_reg(pDevice, pDevice->T44_address, msg_buf, pDevice->T5_msg_size);
+
+	count = msg_buf[0];
+
+	if (count == 0)
+		goto end;
+
+	if (count > pDevice->max_reportid) {
+		count = pDevice->max_reportid;
+	}
+
+	ret = AtmlPadProcessMessage(pDevice, msg_buf + 1);
+	if (ret < 0) {
+		goto end;
+	}
+
+	num_left = count - 1;
+
+	if (num_left) {
+		ret = AtmelReadAndProcessMessages(pDevice, num_left);
+		if (ret < 0)
+			goto end;
+		//else if (ret != num_left)
+		///	DbgPrint("T44: Unexpected invalid message!\n");
+	}
+
+end:
+	ExFreePoolWithTag(msg_buf, ATMLPAD_POOL_TAG);
+	return true;
+}
+
+bool AtmlPadDeviceRead(PDEVICE_CONTEXT pDevice) {
+	int total_handled, num_handled;
+	uint8_t count = pDevice->last_message_count;
+
+	if (count < 1 || count > pDevice->max_reportid)
+		count = 1;
+
+	/* include final invalid message */
+	total_handled = AtmelReadAndProcessMessages(pDevice, count + 1);
+	if (total_handled < 0)
+		return false;
+	else if (total_handled <= count)
+		goto update_count;
+
+	/* keep reading two msgs until one is invalid or reportid limit */
+	do {
+		num_handled = AtmelReadAndProcessMessages(pDevice, 2);
+		if (num_handled < 0)
+			return false;
+
+		total_handled += num_handled;
+
+		if (num_handled < 2)
+			break;
+	} while (total_handled < pDevice->num_touchids);
+
+update_count:
+	pDevice->last_message_count = total_handled;
+
+	return true;
 }
 
 BOOLEAN OnInterruptIsr(
@@ -429,35 +567,11 @@ BOOLEAN OnInterruptIsr(
 	if (!pDevice->ConnectInterrupt)
 		return true;
 
-	if (pDevice->multitouch == MXT_TOUCH_MULTITOUCHSCREEN_T100)
-		return true;
-
-	AtmlPadDeviceRead(pDevice);
+	if (pDevice->T44_address)
+		AtmlPadDeviceReadT44(pDevice);
+	else
+		AtmlPadDeviceRead(pDevice);
 	return true;
-}
-
-VOID
-AtmlPadReadWriteWorkItem(
-	IN WDFWORKITEM  WorkItem
-	)
-{
-	WDFDEVICE Device = (WDFDEVICE)WdfWorkItemGetParentObject(WorkItem);
-	PDEVICE_CONTEXT pDevice = GetDeviceContext(Device);
-
-	WdfObjectDelete(WorkItem);
-
-	if (!pDevice->ConnectInterrupt)
-		return;
-
-	if (pDevice->multitouch != MXT_TOUCH_MULTITOUCHSCREEN_T100) {
-		return;
-	}
-
-	AtmlPadDeviceRead(pDevice);
-
-	csgesture_softc sc = pDevice->sc;
-	TrackpadRawInput(pDevice, &sc, 1);
-	pDevice->sc = sc;
 }
 
 void AtmlPadTimerFunc(_In_ WDFTIMER hTimer) {
@@ -466,25 +580,6 @@ void AtmlPadTimerFunc(_In_ WDFTIMER hTimer) {
 
 	if (!pDevice->ConnectInterrupt)
 		return;
-
-	if (pDevice->multitouch == MXT_TOUCH_MULTITOUCHSCREEN_T100) {
-		WDF_OBJECT_ATTRIBUTES attributes;
-		WDF_WORKITEM_CONFIG workitemConfig;
-		WDFWORKITEM hWorkItem;
-
-		WDF_OBJECT_ATTRIBUTES_INIT(&attributes);
-		WDF_OBJECT_ATTRIBUTES_SET_CONTEXT_TYPE(&attributes, DEVICE_CONTEXT);
-		attributes.ParentObject = Device;
-		WDF_WORKITEM_CONFIG_INIT(&workitemConfig, AtmlPadReadWriteWorkItem);
-
-		WdfWorkItemCreate(&workitemConfig,
-			&attributes,
-			&hWorkItem);
-
-		WdfWorkItemEnqueue(hWorkItem);
-
-		return;
-	}
 
 	if (!pDevice->RegsSet)
 		return;
@@ -1325,7 +1420,7 @@ void ProcessInfo(PDEVICE_CONTEXT pDevice, struct csgesture_softc *sc, int infoVa
 		report.Value[i] = 0x00;
 	switch (infoValue) {
 	case 0: //driver version
-		strcpy((char *)report.Value, "3.0-atmel beta 11.9 (5/22/2016)");
+		strcpy((char *)report.Value, "3.0-atmel beta 11.10 (8/11/2016)");
 		break;
 	case 1: //product name
 		strcpy((char *)report.Value, sc->product_id);
