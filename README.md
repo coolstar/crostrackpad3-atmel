@@ -1,7 +1,7 @@
 # crostrackpad3-atmel
 Atmel MaxTouch Trackpad Driver for Pixel 1, Pixel 2, Samsung Chromebook 2 and Samsung Chromebook 3.
 
-Tested remotely on a Pixel 2. Not officially verified. YMMV. May need adjustments; feel free to send a pull request.
+Tested and verified on a Chromebook Pixel 2.
 
 Based on cypress crostrackpad3 driver.
 
