@@ -1420,7 +1420,7 @@ void ProcessInfo(PDEVICE_CONTEXT pDevice, struct csgesture_softc *sc, int infoVa
 		report.Value[i] = 0x00;
 	switch (infoValue) {
 	case 0: //driver version
-		strcpy((char *)report.Value, "3.0-atmel beta 11.10 (8/11/2016)");
+		strcpy((char *)report.Value, "3.0-atmel (8/18/2016)");
 		break;
 	case 1: //product name
 		strcpy((char *)report.Value, sc->product_id);
