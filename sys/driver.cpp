@@ -724,12 +724,13 @@ bool ProcessScroll(PDEVICE_CONTEXT pDevice, csgesture_softc *sc, int abovethresh
 			}
 		}
 
-		/*int delta_x1 = sc->x[i1] - sc->lastx[i1];
+		int delta_x1 = sc->x[i1] - sc->lastx[i1];
 		int delta_y1 = sc->y[i1] - sc->lasty[i1];
 
 		int delta_x2 = sc->x[i2] - sc->lastx[i2];
 		int delta_y2 = sc->y[i2] - sc->lasty[i2];
 
+		/*
 		if ((abs(delta_y1) + abs(delta_y2)) > (abs(delta_x1) + abs(delta_x2))) {
 			int avgy = (delta_y1 + delta_y2) / 2;
 			sc->scrolly = avgy;
@@ -767,6 +768,21 @@ bool ProcessScroll(PDEVICE_CONTEXT pDevice, csgesture_softc *sc, int abovethresh
 			sc->scrollx = 1;
 		else
 			sc->scrollx = 0;*/
+
+		int scrollx = 0;
+		int scrolly = 0;
+
+		if ((abs(delta_y1) + abs(delta_y2)) > (abs(delta_x1) + abs(delta_x2))) {
+			int avgy = (delta_y1 + delta_y2) / 2;
+			scrolly = avgy;
+		}
+		else {
+			int avgx = (delta_x1 + delta_x2) / 2;
+			scrollx = avgx;
+		}
+
+		if (abs(scrollx) < 5 && abs(scrolly) < 5 && !sc->scrollingActive)
+			return false;
 
 		_ATMLPAD_SCROLL_REPORT report;
 		report.ReportID = REPORTID_SCROLL;
@@ -1057,9 +1073,6 @@ bool ProcessThreeFingerSwipe(PDEVICE_CONTEXT pDevice, csgesture_softc *sc, int a
 void TapToClickOrDrag(PDEVICE_CONTEXT pDevice, csgesture_softc *sc, int button) {
 	if (!sc->settings.tapToClickEnabled)
 		return;
-	if (sc->scrollInertiaActive)
-		return;
-
 	sc->tickssinceclick++;
 	if (sc->mouseDownDueToTap && sc->idForMouseDown == -1) {
 		if (sc->tickssinceclick > 10) {
@@ -1074,15 +1087,21 @@ void TapToClickOrDrag(PDEVICE_CONTEXT pDevice, csgesture_softc *sc, int button) 
 		sc->tickssinceclick = 0;
 		return;
 	}
-	if (button == 0)
-		return;
 
 	for (int i = 0; i < MAX_FINGERS; i++) {
 		if (sc->truetick[i] < 10 && sc->truetick[i] > 0)
 			button++;
 	}
 
+	if (button == 0)
+		return;
+
 	int buttonmask = 0;
+
+	if (sc->scrollInertiaActive) {
+		stop_scroll(pDevice);
+		return;
+	}
 
 	switch (button) {
 	case 1:
@@ -1196,10 +1215,12 @@ void ProcessGesture(PDEVICE_CONTEXT pDevice, csgesture_softc *sc) {
 
 #pragma mark process different gestures
 	bool handled = false;
+	bool handledByScroll = false;
+
 	if (!handled)
 		handled = ProcessThreeFingerSwipe(pDevice, sc, abovethreshold, iToUse);
 	if (!handled)
-		handled = ProcessScroll(pDevice, sc, abovethreshold, iToUse);
+		handledByScroll = handled = ProcessScroll(pDevice, sc, abovethreshold, iToUse);
 	if (!handled)
 		handled = ProcessMove(pDevice, sc, abovethreshold, iToUse);
 
@@ -1348,7 +1369,8 @@ void ProcessGesture(PDEVICE_CONTEXT pDevice, csgesture_softc *sc) {
 	sc->ticksincelastrelease++;
 
 #pragma mark process tap to click
-	TapToClickOrDrag(pDevice, sc, releasedfingers);
+	if (!handledByScroll)
+		TapToClickOrDrag(pDevice, sc, releasedfingers);
 
 #pragma mark send to system
 	update_relative_mouse(pDevice, sc->buttonmask, sc->dx, sc->dy, sc->scrolly, sc->scrollx);
@@ -1420,7 +1442,7 @@ void ProcessInfo(PDEVICE_CONTEXT pDevice, struct csgesture_softc *sc, int infoVa
 		report.Value[i] = 0x00;
 	switch (infoValue) {
 	case 0: //driver version
-		strcpy((char *)report.Value, "3.0-atmel (8/18/2016)");
+		strcpy((char *)report.Value, "3.0.2-atmel (9/14/2016)");
 		break;
 	case 1: //product name
 		strcpy((char *)report.Value, sc->product_id);
